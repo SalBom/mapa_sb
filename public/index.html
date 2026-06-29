@@ -52,10 +52,35 @@
   .pop a{ display:inline-block; margin-top:8px; font-size:12px; font-weight:600; color:#1d4ed8; text-decoration:none; }
   .pop a:hover{ text-decoration:underline; }
   .pdot{ display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:middle; }
-  @media (max-width:720px){
-    #app{ flex-direction:column; }
-    #panel{ width:100%; flex:0 0 auto; max-height:46%; border-right:0; border-bottom:1px solid var(--line); }
-    #map{ flex:1 1 auto; }
+  /* En desktop, el botón flotante y el fondo oscuro no existen */
+  #panelToggle{ display:none; }
+  #scrim{ display:none; }
+  /* ---- Mobile: mapa a pantalla completa, panel como cajón deslizante ---- */
+  @media (max-width:768px){
+    #panel{
+      position:fixed; top:0; left:0; height:100dvh;
+      width:min(86vw,360px); max-height:none; flex:none;
+      border-right:1px solid var(--line); border-bottom:0;
+      transform:translateX(-100%); transition:transform .25s ease;
+      z-index:1200; box-shadow:0 0 40px rgba(0,0,0,.28);
+    }
+    body.panel-open #panel{ transform:none; }
+    #map{ position:absolute; inset:0; }
+    #panelToggle{
+      display:flex; align-items:center; justify-content:center; gap:8px;
+      position:fixed; top:12px; right:12px; z-index:1300;
+      height:42px; padding:0 15px; border:1px solid var(--line); border-radius:11px;
+      background:var(--panel); color:var(--ink); font-size:13px; font-weight:650;
+      box-shadow:0 2px 12px rgba(0,0,0,.2); cursor:pointer;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    }
+    #scrim{
+      display:block; position:fixed; inset:0; background:rgba(10,18,27,.45);
+      opacity:0; pointer-events:none; transition:opacity .25s ease; z-index:1100;
+    }
+    body.panel-open #scrim{ opacity:1; pointer-events:auto; }
+    /* el modal de Street View por encima de todo */
+    #svModal{ z-index:1500; }
   }
   .pop .svbtn{ display:block; width:100%; margin-top:9px; padding:7px 10px; border:0; border-radius:7px; background:var(--accent); color:var(--on-accent); font-size:12px; font-weight:600; cursor:pointer; }
   .pop .svbtn:hover{ opacity:.92; }
@@ -117,6 +142,9 @@
       <iframe id="svFrame" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
     </div>
   </div>
+
+  <button id="panelToggle" aria-label="Abrir filtros"><span aria-hidden="true">☰</span> Filtros</button>
+  <div id="scrim"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
@@ -232,6 +260,20 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
   const cliVisible=c=> (mode==="zona" ? activeZonas.has(c.zona) : activeVends.has(c.vendedor)) && (!q || c.name.toLowerCase().includes(q));
 
   const map=L.map("map",{zoomControl:true}).setView([-40,-63],4);
+
+  // ---- Responsive: cajón del panel en mobile + redibujado del mapa ----
+  const panelToggle=document.getElementById("panelToggle"), scrim=document.getElementById("scrim");
+  function setPanel(open){
+    document.body.classList.toggle("panel-open", open);
+    panelToggle.innerHTML = open ? '<span aria-hidden="true">✕</span> Cerrar'
+                                 : '<span aria-hidden="true">☰</span> Filtros';
+    panelToggle.setAttribute("aria-label", open ? "Cerrar filtros" : "Abrir filtros");
+  }
+  panelToggle.onclick=()=> setPanel(!document.body.classList.contains("panel-open"));
+  scrim.onclick=()=> setPanel(false);
+  // Cuando cambia el tamaño/orientación, Leaflet necesita recalcular su tamaño.
+  let rsz; addEventListener("resize", ()=>{ clearTimeout(rsz); rsz=setTimeout(()=>map.invalidateSize(),200); });
+  setTimeout(()=>map.invalidateSize(),250);
   const bases={
     claro: L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OpenStreetMap, © CARTO"}),
     detallado: L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{subdomains:"abc",maxZoom:19,attribution:"© OpenStreetMap"}),
