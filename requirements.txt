@@ -1,0 +1,4 @@
+# Este proyecto solo usa la librería estándar de Python
+# (http.server, xmlrpc.client, subprocess, threading, json).
+# No hay paquetes que instalar; este archivo existe para que
+# Railway reconozca el repo como un proyecto Python.
