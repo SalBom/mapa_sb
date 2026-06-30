@@ -108,7 +108,12 @@
       <p class="sub">Clientes y zonas de venta &middot; Argentina</p>
     </div>
     <div class="pad" style="border-bottom:1px solid var(--line)">
-      <p class="label">Mapa base</p>
+      <p class="label">Dataset</p>
+      <div class="seg" id="datasetSeg">
+        <button data-dataset="clientes" class="on">Clientes</button>
+        <button data-dataset="competencia">Competencia</button>
+      </div>
+      <p class="label mt">Mapa base</p>
       <div class="seg" id="baseSeg">
         <button data-base="claro" class="on">Claro</button>
         <button data-base="detallado">Detallado</button>
@@ -126,7 +131,7 @@
       <input class="search" id="search" placeholder="Buscar cliente&hellip;" autocomplete="off">
     </div>
     <div class="scroll pad" id="list"></div>
-    <div class="countbar"><span>Clientes visibles</span><b id="count">0</b></div>
+    <div class="countbar"><span id="countbarLabel">Clientes visibles</span><b id="count">0</b></div>
     <div class="pad foot">Zoom para ver calles y pueblos &middot; clic en un cliente para acercarte.</div>
   </div>
   <div id="map"></div>
@@ -175,6 +180,10 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
     document.getElementById("map").innerHTML = '<p style="padding:24px;font-family:sans-serif">No se pudo cargar <b>data.json</b>. Asegurate de abrir esta p&aacute;gina por un servidor (python -m http.server) con el data.json en la misma carpeta.</p>';
     return;
   }
+  let COMP_DATA = null;
+  try {
+    COMP_DATA = await fetch("./competencia.json", {cache:"no-store"}).then(r=> r.ok ? r.json() : null);
+  } catch(e){ COMP_DATA = null; }
 
 
   // ---- Street View ----
@@ -232,32 +241,49 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
     "#C2A24E","#5B7B9A","#7E9B6B","#B07D8A","#6B8E8E","#8A7B5C",
     "#9E6B7D","#6F8FA3","#A88B5A","#738C6E","#8E6E8A","#B58E6B"
   ];
-  const ZONA_COLORS={}, VEND_COLORS={};
-  Object.keys(DATA.zonas).forEach((z,i)=> ZONA_COLORS[z]=ZONA_PALETTE[z]||FALLBACK[i%FALLBACK.length]);
-  Object.keys(DATA.vendedores).sort().forEach((v,i)=> VEND_COLORS[v]=VEND_PALETTE[i%VEND_PALETTE.length]);
+  const ZONA_COLORS={};
+  // Las zonas son las mismas 6 categorías geográficas en ambos datasets,
+  // así que se calculan una sola vez sobre la unión zonas(clientes) ∪ zonas(competencia).
+  const ALL_ZONAS = Object.assign({}, DATA.zonas, COMP_DATA ? COMP_DATA.zonas : {});
+  Object.keys(ALL_ZONAS).forEach((z,i)=> ZONA_COLORS[z]=ZONA_PALETTE[z]||FALLBACK[i%FALLBACK.length]);
 
-  const VEND=DATA.vendedores, ZONAS=DATA.zonas, P2V=DATA.prov2vend, CLIENTS=DATA.clients;
-  const P2Z=DATA.prov2zona||{};                 // provincia -> zona (fondo del polígono)
+  // ---- Indirección por dataset: "clientes" (Odoo, agrupado por vendedor) y
+  // "competencia" (scraping, agrupado por marca) comparten la misma UI de
+  // filtros/mapa, pero nunca se mezclan: solo un dataset está activo a la vez.
+  function buildDataset(d, groupField, groupLabel){
+    const groups = groupField==="vendedor" ? d.vendedores : d.marcas;
+    const groupColors = {};
+    Object.keys(groups).sort().forEach((g,i)=> groupColors[g]=VEND_PALETTE[i%VEND_PALETTE.length]);
+    return {
+      items: d.clients, groups, groupColors, groupField, groupLabel,
+      zonaOrder: Object.keys(d.zonas), prov2zona: d.prov2zona||{}
+    };
+  }
+  const DATASETS = { clientes: buildDataset(DATA, "vendedor", "Vendedor") };
+  if (COMP_DATA) DATASETS.competencia = buildDataset(COMP_DATA, "marca", "Marca");
+
+  const P2Z=DATASETS.clientes.prov2zona;         // provincia -> zona (fondo del polígono, igual en ambos datasets)
   // Zona de cada polígono: la del propio feature (partidos de AMBA) o, si no la
   // trae, la de la provincia (P2Z). Cubre provincias, CABA y los 40 partidos.
   const FEAT_ZONA={};
   GEO.features.forEach(f=>{ const n=f.properties.name; FEAT_ZONA[n]=f.properties.zona||P2Z[n]||"Sin zona"; });
-  const ZONA_ORDER=Object.keys(ZONAS);
-  const vendsByZona=z=>Object.keys(VEND).filter(v=>VEND[v].zona===z);
+  const groupsByZona=(ds,z)=>Object.keys(ds.groups).filter(g=>ds.groups[g].zona===z);
 
+  let datasetKey="clientes";
+  let DS=DATASETS[datasetKey];
   let mode="zona";
-  let activeZonas=new Set(ZONA_ORDER);          // filtro en modo Zona
-  let activeVends=new Set(Object.keys(VEND));    // filtro en modo Vendedor
+  let activeZonas=new Set(DS.zonaOrder);         // filtro en modo Zona
+  let activeGroups=new Set(Object.keys(DS.groups)); // filtro en modo Vendedor/Marca
   let showProv=true, showCli=true, q="";
 
-  // Color de un CLIENTE: por su zona (modo Zona) o por su vendedor (modo Vendedor).
-  const cliColor=c=> (mode==="zona" ? (ZONA_COLORS[c.zona]||"#94a3b8") : (VEND_COLORS[c.vendedor]||"#94a3b8"));
+  // Color de un punto: por su zona (modo Zona) o por su grupo (vendedor/marca).
+  const cliColor=c=> (mode==="zona" ? (ZONA_COLORS[c.zona]||"#94a3b8") : (DS.groupColors[c[DS.groupField]]||"#94a3b8"));
   // El POLÍGONO de provincia/partido se pinta SIEMPRE por su zona (es lo geográfico).
   const polyColor=name=> (ZONA_COLORS[FEAT_ZONA[name]]||"#94a3b8");
   // Visibilidad de un polígono: por la zona a la que pertenece.
   const provVisible=name=> activeZonas.has(FEAT_ZONA[name]);
-  // Visibilidad de un cliente: por zona (modo Zona) o por vendedor (modo Vendedor).
-  const cliVisible=c=> (mode==="zona" ? activeZonas.has(c.zona) : activeVends.has(c.vendedor)) && (!q || c.name.toLowerCase().includes(q));
+  // Visibilidad de un punto: por zona (modo Zona) o por grupo (modo Vendedor/Marca).
+  const cliVisible=c=> (mode==="zona" ? activeZonas.has(c.zona) : activeGroups.has(c[DS.groupField])) && (!q || c.name.toLowerCase().includes(q));
 
   const map=L.map("map",{zoomControl:true}).setView([-40,-63],4);
 
@@ -305,25 +331,36 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
   map.on("zoomend",()=>{ Object.keys(provLayers).forEach(n=>provLayers[n].setStyle(provStyle(n))); });
 
   const cliLayer=L.layerGroup().addTo(map);
+  function popupFor(c){
+    const groupVal=c[DS.groupField];
+    const groupDot='<span class="pdot" style="background:'+(DS.groupColors[groupVal]||"#94a3b8")+'"></span>'+groupVal;
+    let extra='';
+    if(datasetKey==="competencia"){
+      if(c.tipo) extra+='<span>'+esc(c.tipo)+'</span>';
+      if(c.telefono) extra+='<span>Tel: '+esc(c.telefono)+'</span>';
+      if(c.web) extra+='<span>'+esc(c.web)+'</span>';
+      if(c.multimarca) extra+='<span>Multimarca</span>';
+    }
+    return '<div class="pop"><b>'+esc(c.name)+'</b>'+
+      '<span>'+groupDot+'</span>'+
+      '<span>'+(c.direccion?esc(c.direccion)+' · ':'')+esc(c.provincia)+' · Zona '+esc(c.zona)+'</span>'+
+      extra+
+      '<button class="svbtn" data-lat="'+c.lat+'" data-lng="'+c.lng+'" data-name="'+esc(c.name)+'">Ver Street View</button>'+
+      '<a href="https://www.google.com/maps?q='+c.lat+','+c.lng+'" target="_blank" rel="noopener">Abrir en Google Maps ↗</a></div>';
+  }
   function renderClients(){
     cliLayer.clearLayers();
     if(!showCli) return;
-    CLIENTS.filter(cliVisible).forEach(c=>{
+    DS.items.filter(cliVisible).forEach(c=>{
       const m=L.circleMarker([c.lat,c.lng],{radius:6,color:"#fff",weight:1.5,fillColor:cliColor(c),fillOpacity:1});
-      m.bindPopup(
-        '<div class="pop"><b>'+c.name+'</b>'+
-        '<span><span class="pdot" style="background:'+(VEND_COLORS[c.vendedor]||"#94a3b8")+'"></span>'+c.vendedor+'</span>'+
-        '<span>'+(c.direccion?c.direccion+' · ':'')+c.provincia+' · Zona '+c.zona+'</span>'+
-        '<button class="svbtn" data-lat="'+c.lat+'" data-lng="'+c.lng+'" data-name="'+esc(c.name)+'">Ver Street View</button>'+
-        '<a href="https://www.google.com/maps?q='+c.lat+','+c.lng+'" target="_blank" rel="noopener">Abrir en Google Maps ↗</a></div>'
-      );
+      m.bindPopup(popupFor(c));
       m.on("click",()=> map.flyTo([c.lat,c.lng], Math.max(map.getZoom(),16),{duration:.6}) );
       m.addTo(cliLayer);
     });
   }
 
-  function clientsCountVend(v){return CLIENTS.filter(c=>c.vendedor===v).length;}
-  function clientsCountZona(z){return CLIENTS.filter(c=>c.zona===z).length;}
+  function countByGroup(g){return DS.items.filter(c=>c[DS.groupField]===g).length;}
+  function countByZona(z){return DS.items.filter(c=>c.zona===z).length;}
   function rowEl(o){
     const r=document.createElement("label"); r.className=o.cls;
     const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=o.checked; cb.indeterminate=o.indet; cb.onchange=o.onToggle;
@@ -335,27 +372,27 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
   function renderList(){
     const el=document.getElementById("list"); el.innerHTML="";
     if(mode==="zona"){
-      ZONA_ORDER.forEach(z=>{
-        el.appendChild(rowEl({cls:"row zona",color:ZONA_COLORS[z],name:z,count:clientsCountZona(z),
+      DS.zonaOrder.forEach(z=>{
+        el.appendChild(rowEl({cls:"row zona",color:ZONA_COLORS[z],name:z,count:countByZona(z),
           checked:activeZonas.has(z),indet:false,
           onToggle:()=>{ activeZonas.has(z)?activeZonas.delete(z):activeZonas.add(z); refresh(); }}));
       });
     } else {
-      ZONA_ORDER.forEach(z=>{
-        const vs=vendsByZona(z); if(!vs.length) return;
+      DS.zonaOrder.forEach(z=>{
+        const gs=groupsByZona(DS,z); if(!gs.length) return;
         const h=document.createElement("div"); h.className="grouphdr";
         h.innerHTML='<span class="sw" style="background:'+ZONA_COLORS[z]+'"></span>'+z+'<span class="gl"></span>';
         el.appendChild(h);
-        vs.forEach(v=> el.appendChild(rowEl({cls:"row",color:VEND_COLORS[v],name:v,count:clientsCountVend(v),
-          checked:activeVends.has(v),indet:false,
-          onToggle:()=>{ activeVends.has(v)?activeVends.delete(v):activeVends.add(v); refresh(); }})));
+        gs.forEach(g=> el.appendChild(rowEl({cls:"row",color:DS.groupColors[g],name:g,count:countByGroup(g),
+          checked:activeGroups.has(g),indet:false,
+          onToggle:()=>{ activeGroups.has(g)?activeGroups.delete(g):activeGroups.add(g); refresh(); }})));
       });
     }
   }
   function refresh(){
     Object.keys(provLayers).forEach(n=>provLayers[n].setStyle(provStyle(n)));
     renderClients(); renderList();
-    document.getElementById("count").textContent = CLIENTS.filter(cliVisible).length+" / "+CLIENTS.length;
+    document.getElementById("count").textContent = DS.items.filter(cliVisible).length+" / "+DS.items.length;
   }
 
   document.querySelectorAll("#baseSeg button").forEach(b=>{ b.onclick=()=>{
@@ -363,6 +400,19 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
   };});
   document.querySelectorAll("#seg button").forEach(b=>{ b.onclick=()=>{
     document.querySelectorAll("#seg button").forEach(x=>x.classList.remove("on")); b.classList.add("on"); mode=b.dataset.mode; refresh();
+  };});
+  document.querySelectorAll("#datasetSeg button").forEach(b=>{ b.onclick=()=>{
+    const key=b.dataset.dataset;
+    if(key==="competencia" && !DATASETS.competencia){
+      document.getElementById("list").innerHTML='<p style="padding:8px 0;font-size:13px;color:var(--muted)">No se encontró <b>competencia.json</b>. Corré <code>export_competencia_json.py</code> en scraping_competencia y recargá la página.</p>';
+      return;
+    }
+    document.querySelectorAll("#datasetSeg button").forEach(x=>x.classList.remove("on")); b.classList.add("on");
+    datasetKey=key; DS=DATASETS[key];
+    document.querySelector('#seg button[data-mode="vendedor"]').textContent = DS.groupLabel;
+    document.getElementById("countbarLabel").textContent = key==="clientes"?"Clientes visibles":"Puntos visibles";
+    mode="zona"; activeZonas=new Set(DS.zonaOrder); activeGroups=new Set(Object.keys(DS.groups));
+    refresh();
   };});
   document.getElementById("mProv").onchange=e=>{showProv=e.target.checked; refresh();};
   document.getElementById("mCli").onchange =e=>{showCli=e.target.checked; refresh();};
