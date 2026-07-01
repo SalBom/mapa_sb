@@ -14,6 +14,7 @@ Después corré:  python  odoo_to_map.py
 """
 
 import os, re, json, unicodedata, xmlrpc.client
+from datetime import date
 
 # Carpeta del script (para encontrar .env y escribir data.json aunque
 # se ejecute desde otra ubicación, p. ej. el Programador de tareas).
@@ -223,7 +224,49 @@ for p in partners:
     })
 
 # ------------------------------------------------------------------
-# 5) Reconstruir la estructura que usa el mapa (zonas / vendedores / prov2vend)
+# 5) Última factura de venta por cliente (account.move out_invoice posted)
+# ------------------------------------------------------------------
+partner_ids = [c["id"] for c in clients]
+print(f"  Consultando facturas de venta para {len(partner_ids)} clientes...")
+invoices = search_read("account.move", [
+    ("move_type", "=", "out_invoice"),
+    ("state", "=", "posted"),
+    ("partner_id", "in", partner_ids),
+], ["partner_id", "invoice_date"])
+
+last_invoice = {}
+for inv in invoices:
+    pid = inv["partner_id"][0] if isinstance(inv["partner_id"], (list, tuple)) else inv["partner_id"]
+    d = inv.get("invoice_date")
+    if d and (pid not in last_invoice or d > last_invoice[pid]):
+        last_invoice[pid] = d
+
+today = date.today()
+def calc_estado(fecha_str):
+    if not fecha_str:
+        return "SIN FACTURA"
+    d = date.fromisoformat(fecha_str) if isinstance(fecha_str, str) else fecha_str
+    diff = (today.year - d.year) * 12 + (today.month - d.month)
+    if diff < 3:
+        return "ACTIVO"
+    if diff < 4:
+        return "RIESGO MEDIO"
+    if diff < 6:
+        return "RIESGO ALTO"
+    return "PERDIDO"
+
+est_count = {}
+for c in clients:
+    uf = last_invoice.get(c["id"])
+    c["ultima_factura"] = str(uf) if uf else None
+    c["estado"] = calc_estado(uf)
+    est_count[c["estado"]] = est_count.get(c["estado"], 0) + 1
+
+print(f"  Facturas procesadas: {len(invoices)} registros · últimas de {len(last_invoice)} clientes")
+print(f"  Estados: {', '.join(f'{e}={n}' for e, n in sorted(est_count.items()))}")
+
+# ------------------------------------------------------------------
+# 6) Reconstruir la estructura que usa el mapa (zonas / vendedores / prov2vend)
 # ------------------------------------------------------------------
 zonas = {z: sorted({c["provincia"] for c in clients if c["zona"] == z}) for z in ZONA_ORDER}
 zonas = {z: provs for z, provs in zonas.items() if provs}      # solo zonas con datos
