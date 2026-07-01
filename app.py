@@ -16,16 +16,21 @@ sobrescribe el archivo si termina OK, nunca lo deja a medio escribir.
 """
 import datetime
 import http.server
+import json
 import os
 import subprocess
 import sys
 import threading
 import time
+import xmlrpc.client
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PUBLIC_DIR = os.path.join(BASE_DIR, "public")
 PORT = int(os.environ.get("PORT", "8000"))
 REFRESH_MINUTES = float(os.environ.get("REFRESH_MINUTES", "30"))
+
+ODOO_URL = os.environ.get("ODOO_URL", "").rstrip("/")
+ODOO_DB = os.environ.get("ODOO_DB", "")
 
 
 def log(msg):
@@ -60,14 +65,57 @@ def sync_forever():
         run_sync()
 
 
+class MapHandler(http.server.SimpleHTTPRequestHandler):
+    def do_POST(self):
+        if self.path == "/login":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                creds = json.loads(body)
+            except Exception:
+                self._json_response(400, {"ok": False, "error": "JSON inválido"})
+                return
+            user = creds.get("user", "")
+            password = creds.get("password", "")
+            if not user or not password:
+                self._json_response(400, {"ok": False, "error": "Faltan credenciales"})
+                return
+            if not ODOO_URL or not ODOO_DB:
+                self._json_response(500, {"ok": False, "error": "ODOO_URL/ODOO_DB no configuradas"})
+                return
+            try:
+                common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common", allow_none=True)
+                uid = common.authenticate(ODOO_DB, user, password, {})
+            except Exception as e:
+                log(f"login: error conectando a Odoo: {e}")
+                self._json_response(502, {"ok": False, "error": "No se pudo conectar a Odoo"})
+                return
+            if uid:
+                log(f"login: OK para {user} (uid={uid})")
+                self._json_response(200, {"ok": True, "user": user})
+            else:
+                log(f"login: FALLÓ para {user}")
+                self._json_response(401, {"ok": False, "error": "Usuario o contraseña incorrectos"})
+
+    def _json_response(self, code, obj):
+        data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, fmt, *args):
+        pass
+
+
 def main():
     os.makedirs(PUBLIC_DIR, exist_ok=True)
 
     threading.Thread(target=sync_forever, daemon=True).start()
 
-    os.chdir(PUBLIC_DIR)  # solo esta carpeta queda expuesta por HTTP
-    handler = http.server.SimpleHTTPRequestHandler
-    with http.server.ThreadingHTTPServer(("0.0.0.0", PORT), handler) as httpd:
+    os.chdir(PUBLIC_DIR)
+    with http.server.ThreadingHTTPServer(("0.0.0.0", PORT), MapHandler) as httpd:
         log(f"http: sirviendo {PUBLIC_DIR} en el puerto {PORT} "
             f"(refresco cada {REFRESH_MINUTES} min)")
         httpd.serve_forever()
