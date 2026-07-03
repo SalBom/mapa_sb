@@ -95,6 +95,33 @@
   #svHead a{ font-size:12.5px; font-weight:600; color:#1d4ed8; text-decoration:none; }
   #svClose{ border:0; background:var(--soft); width:30px; height:30px; border-radius:8px; cursor:pointer; font-size:16px; line-height:1; color:var(--ink); }
   #svFrame{ flex:1; width:100%; border:0; }
+
+  /* ---- Modal de consulta BCRA ---- */
+  #bcraModal{ position:absolute; inset:0; background:rgba(15,23,42,.55); display:none; align-items:center; justify-content:center; z-index:1400; }
+  #bcraCard{ width:min(420px,92vw); max-height:82vh; background:var(--panel); border-radius:16px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,.35); display:flex; flex-direction:column; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  #bcraHead{ display:flex; align-items:flex-start; gap:12px; padding:16px 18px; border-bottom:1px solid var(--line); }
+  #bcraHead b{ display:block; font-size:14.5px; color:var(--ink); }
+  #bcraSub{ display:block; font-size:12px; color:var(--muted); margin-top:2px; }
+  #bcraClose{ border:0; background:var(--soft); width:30px; height:30px; flex:0 0 auto; border-radius:8px; cursor:pointer; font-size:16px; line-height:1; color:var(--ink); }
+  #bcraBody{ padding:18px; overflow-y:auto; }
+  .bcra-loading{ display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px; padding:8px 0; }
+  .bcra-spinner{ width:16px; height:16px; border-radius:50%; border:2px solid var(--line); border-top-color:var(--brand); animation:bcraspin .7s linear infinite; }
+  @keyframes bcraspin{ to{ transform:rotate(360deg); } }
+  .bcra-error{ color:#ef4444; font-size:13px; padding:8px 0; }
+  .bcra-summary{ display:flex; align-items:center; gap:14px; padding:10px 0 16px; }
+  .bcra-sit-num{ width:52px; height:52px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:22px; font-weight:800; flex:0 0 auto; border:2.5px solid currentColor; }
+  .bcra-sit-label{ font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); }
+  .bcra-sit-entidad{ font-size:13px; color:var(--ink); margin-top:2px; }
+  .bcra-warn{ display:flex; align-items:center; gap:8px; background:rgba(239,68,68,.1); color:#ef4444; border-radius:9px; padding:9px 12px; font-size:12.5px; font-weight:600; margin-bottom:16px; }
+  .bcra-section-title{ font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
+  .bcra-table{ border:1px solid var(--line); border-radius:10px; overflow:hidden; margin-bottom:16px; }
+  .bcra-table-row{ display:flex; align-items:center; gap:10px; padding:8px 12px; font-size:12.5px; color:var(--ink); border-bottom:1px solid var(--line); }
+  .bcra-table-row:last-child{ border-bottom:0; }
+  .bcra-table-row .n{ font-weight:800; font-size:13px; width:18px; text-align:center; flex:0 0 auto; }
+  .bcra-cheque-row{ padding:9px 12px; font-size:12.5px; color:var(--ink); border-bottom:1px solid var(--line); }
+  .bcra-cheque-row:last-child{ border-bottom:0; }
+  .bcra-cheque-row .meta{ color:var(--muted); font-size:11.5px; margin-top:2px; }
+  .bcra-empty{ color:var(--muted); font-size:12.5px; text-align:center; padding:6px 0; }
   .head{ position:relative; }
   #brand{ max-width:205px; max-height:40px; display:block; margin-bottom:11px; }
   #themeBtn{ position:absolute; top:14px; right:16px; width:32px; height:32px; border:1px solid var(--line);
@@ -102,7 +129,7 @@
   #themeBtn:hover{ border-color:var(--brand); }
   .comp-diamond{ display:block; width:10px; height:10px; transform:rotate(45deg); border:1.5px solid #fff; box-shadow:0 0 3px rgba(0,0,0,.3); }
   .comp-shared{ box-shadow:0 0 0 3px #FFD700, 0 0 8px rgba(255,215,0,.5); }
-  .estado-badge{ display:inline-block; font-size:10px; font-weight:700; padding:1px 6px; border-radius:4px; color:#fff; margin-left:6px; vertical-align:middle; }
+  .estado-badge{ display:inline-block; font-size:11px; font-weight:700; margin-left:6px; vertical-align:middle; }
   .sysdot{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-left:6px; vertical-align:middle; border:1.5px dashed var(--muted); }
   .sysdot-suri{ border-color:#C28E5C; }
   .sys-badge{ display:inline-block; font-size:10px; font-weight:700; padding:1px 6px; border-radius:4px; margin-left:6px; vertical-align:middle; border:1px dashed currentColor; }
@@ -194,6 +221,19 @@
         <button id="svClose" title="Cerrar">&times;</button>
       </div>
       <iframe id="svFrame" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+    </div>
+  </div>
+
+  <div id="bcraModal">
+    <div id="bcraCard">
+      <div id="bcraHead">
+        <div>
+          <b id="bcraTitle">Consulta BCRA</b>
+          <span id="bcraSub"></span>
+        </div>
+        <button id="bcraClose" title="Cerrar">&times;</button>
+      </div>
+      <div id="bcraBody"></div>
     </div>
   </div>
 
@@ -328,23 +368,36 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
     const b=e.target.closest(".svbtn"); if(!b) return;
     openSV(parseFloat(b.dataset.lat), parseFloat(b.dataset.lng), b.dataset.name||"");
   });
+  function closeBcra(){ document.getElementById("bcraModal").style.display="none"; }
+  document.getElementById("bcraClose").onclick = closeBcra;
+  document.getElementById("bcraModal").addEventListener("click", e=>{ if(e.target.id==="bcraModal") closeBcra(); });
+  document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeBcra(); });
   document.addEventListener("click", async e=>{
     const b=e.target.closest(".bcrabtn"); if(!b) return;
-    const cuit=b.dataset.cuit, slot=b.closest(".bcra-slot");
-    b.disabled=true; b.textContent="Consultando...";
-    try{
-      const info = await consultarBcra(cuit);
-      if(slot) slot.innerHTML = bcraBadgesHtml(info);
-    }catch(err){
-      b.disabled=false; b.textContent="Consultar BCRA";
-      if(slot){
-        const errEl=document.createElement("span");
-        errEl.style.cssText="color:#ef4444;font-size:11px;display:block;margin-top:4px";
-        errEl.textContent = err.message || "Error al consultar";
-        slot.appendChild(errEl);
+    openBcraModal(b.dataset.cuit, b.dataset.name||"");
+  });
+  async function openBcraModal(cuit, name){
+    const body=document.getElementById("bcraBody"), sub=document.getElementById("bcraSub");
+    sub.textContent = name;
+    body.innerHTML = '<div class="bcra-loading"><span class="bcra-spinner"></span> Consultando al BCRA&hellip;</div>';
+    document.getElementById("bcraModal").style.display = "flex";
+    let info = BCRA_CACHE.get(cuit);
+    if(!info){
+      try{ info = await consultarBcra(cuit); }
+      catch(err){
+        body.innerHTML = '<div class="bcra-error">'+esc(err.message||"No se pudo consultar")+'</div>'+
+          '<button class="bcrabtn" data-cuit="'+esc(cuit)+'" data-name="'+esc(name)+'">Reintentar</button>';
+        return;
       }
     }
-  });
+    body.innerHTML = bcraModalHtml(info);
+    refreshPopupBcraSlots(cuit);
+  }
+  function refreshPopupBcraSlots(cuit){
+    document.querySelectorAll('.bcra-slot[data-cuit="'+cuit+'"]').forEach(slot=>{
+      slot.innerHTML = bcraSlotHtml(cuit, slot.dataset.name);
+    });
+  }
   function esc(x){ return String(x).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
   // ---- Colores generados a partir de los datos (escala solo) ----
@@ -427,22 +480,50 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
 
   // ---- BCRA (situación crediticia + cheques rechazados, por CUIT) ----
   const SITUACION_COLORS={1:"#22c55e",2:"#84cc16",3:"#eab308",4:"#f97316",5:"#ef4444",6:"#991b1b"};
-  function bcraBadgesHtml(info){
-    let html = '';
+  function bcraModalHtml(info){
+    let html = '<div class="bcra-summary">';
     if(info.situacion){
-      html += '<span>Situaci&oacute;n BCRA: <span class="estado-badge" style="background:'+(SITUACION_COLORS[info.situacion]||"#94a3b8")+'">'+esc(info.situacion)+(info.entidad?' ('+esc(info.entidad)+')':'')+'</span></span>';
+      const color = SITUACION_COLORS[info.situacion]||"#94a3b8";
+      html += '<div class="bcra-sit-num" style="color:'+color+'">'+esc(info.situacion)+'</div>'+
+        '<div><div class="bcra-sit-label">Situaci&oacute;n actual</div>'+
+        '<div class="bcra-sit-entidad">'+esc(info.entidad||"")+'</div></div>';
     } else {
-      html += '<span style="color:var(--muted)">Sin situaci&oacute;n registrada en BCRA</span>';
+      html += '<div class="bcra-sit-num" style="color:var(--muted)">&mdash;</div>'+
+        '<div><div class="bcra-sit-label">Situaci&oacute;n actual</div>'+
+        '<div class="bcra-sit-entidad">Sin registros en el BCRA</div></div>';
     }
+    html += '</div>';
     if(info.tiene_rechazados){
-      html += '<span style="font-weight:600;color:#ef4444">&#9888; '+esc(info.cant_cheques)+' cheque(s) rechazado(s)</span>';
+      html += '<div class="bcra-warn">&#9888; '+esc(info.cant_cheques)+' cheque(s) rechazado(s)</div>';
+    }
+    html += '<div class="bcra-section-title">Situaci&oacute;n por banco'+(info.periodo?' &middot; per&iacute;odo '+esc(info.periodo):'')+'</div>';
+    if(info.entidades && info.entidades.length){
+      html += '<div class="bcra-table">';
+      info.entidades.slice().sort((a,b)=>(b.situacion||0)-(a.situacion||0)).forEach(e=>{
+        html += '<div class="bcra-table-row"><span class="n" style="color:'+(SITUACION_COLORS[e.situacion]||"#94a3b8")+'">'+esc(e.situacion)+'</span> '+esc(e.entidad)+'</div>';
+      });
+      html += '</div>';
+    } else {
+      html += '<div class="bcra-empty">Sin bancos informados</div>';
+    }
+    html += '<div class="bcra-section-title">Cheques rechazados</div>';
+    if(info.cheques && info.cheques.length){
+      html += '<div class="bcra-table">';
+      info.cheques.forEach(c=>{
+        const monto = c.monto!=null ? '$'+Number(c.monto).toLocaleString("es-AR") : '';
+        html += '<div class="bcra-cheque-row"><b>N&ordm; '+esc(c.nro_cheque)+'</b> &middot; '+monto+
+          '<div class="meta">'+esc(c.entidad)+' &middot; rechazado el '+esc(c.fecha_rechazo||"?")+'</div></div>';
+      });
+      html += '</div>';
+    } else {
+      html += '<div class="bcra-empty">Sin cheques rechazados</div>';
     }
     return html;
   }
-  function bcraSlotHtml(cuit){
+  function bcraSlotHtml(cuit, name){
     const cached = BCRA_CACHE.get(cuit);
-    if(cached) return bcraBadgesHtml(cached);
-    return '<button class="bcrabtn" data-cuit="'+cuit+'">Consultar BCRA</button>';
+    const label = cached ? "Ver situaci&oacute;n BCRA" : "Consultar BCRA";
+    return '<button class="bcrabtn" data-cuit="'+cuit+'" data-name="'+esc(name||"")+'">'+label+'</button>';
   }
   async function consultarBcra(cuit){
     const res = await fetch("/bcra-lookup", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({cuit})});
@@ -554,12 +635,12 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
       if(COMPARTIDOS.has(c.id)) extra+='<span style="font-weight:600;color:#FFD700">Compartido con SAL-BOM</span>';
     } else {
       if(c.origen) extra+='<span>Sistema: <span class="sys-badge" style="color:'+(c.origen==="SURI"?"#C28E5C":"var(--brand)")+'">'+esc(c.origen)+'</span></span>';
-      if(c.estado) extra+='<span>Estado: <span class="estado-badge" style="background:'+ESTADO_COLORS[c.estado]+'">'+esc(c.estado)+'</span></span>';
+      if(c.estado) extra+='<span>Estado: <span class="estado-badge" style="color:'+ESTADO_COLORS[c.estado]+'">'+esc(c.estado)+'</span></span>';
       if(c.ultima_factura) extra+='<span>Ult. factura: '+esc(c.ultima_factura)+'</span>';
       if(c.telefono) extra+='<span>Tel: '+esc(c.telefono)+'</span>';
       if(c.cuit) extra+='<span>CUIT: '+esc(c.cuit)+'</span>';
       const cuit = normalizeCuit(c.cuit);
-      if(cuit) extra+='<div class="bcra-slot" data-cuit="'+cuit+'">'+bcraSlotHtml(cuit)+'</div>';
+      if(cuit) extra+='<div class="bcra-slot" data-cuit="'+cuit+'" data-name="'+esc(c.name)+'">'+bcraSlotHtml(cuit,c.name)+'</div>';
     }
     return '<div class="pop"><b>'+esc(c.name)+'</b>'+
       '<span>'+groupDot+'</span>'+

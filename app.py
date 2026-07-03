@@ -110,44 +110,61 @@ def _bcra_get(path):
 
 
 def _bcra_situacion_actual(deudas_json):
-    """(situacion, entidad) del período más reciente, tomando la PEOR
-    situación (la más alta) entre todos los bancos de ese período."""
+    """(situacion, entidad, periodo, entidades[]) del período más reciente.
+    entidades[] trae la situación de CADA banco (no solo la peor), para el
+    detalle que se puede abrir desde el popup."""
     periodos = (deudas_json or {}).get("results", {}).get("periodos") or []
     if not periodos:
-        return None, None
+        return None, None, None, []
     periodo_actual = max(periodos, key=lambda p: p.get("periodo", ""))
     entidades = periodo_actual.get("entidades") or []
     if not entidades:
-        return None, None
+        return None, None, periodo_actual.get("periodo"), []
     peor = max(entidades, key=lambda e: e.get("situacion") or 0)
-    return peor.get("situacion"), peor.get("entidad")
+    detalle = [{"entidad": e.get("entidad"), "situacion": e.get("situacion"),
+                "monto": e.get("monto")} for e in entidades]
+    return peor.get("situacion"), peor.get("entidad"), periodo_actual.get("periodo"), detalle
 
 
-def _bcra_cantidad_rechazados(cheques_json):
+def _bcra_cheques_detalle(cheques_json):
+    """Lista de cheques rechazados individuales (entidad, número, fecha,
+    monto), para el detalle del popup."""
     causales = (cheques_json or {}).get("results", {}).get("causales") or []
-    total = 0
+    out = []
     for causal in causales:
         for ent in causal.get("entidades") or []:
-            total += len(ent.get("detalle") or [])
-    return total
+            for d in ent.get("detalle") or []:
+                out.append({
+                    "causal": causal.get("causal"),
+                    "entidad": ent.get("entidad"),
+                    "nro_cheque": d.get("nroCheque"),
+                    "fecha_rechazo": d.get("fechaRechazo"),
+                    "monto": d.get("monto"),
+                    "fecha_pago": d.get("fechaPago"),
+                })
+    return out
 
 
 def bcra_lookup(cuit):
     """Consulta un solo CUIT contra la API del BCRA (situación + cheques
-    rechazados). Se usa una vez por clic en "Consultar BCRA" del mapa, así
+    rechazados), con el detalle completo (todos los bancos, todos los
+    cheques). Se usa una vez por clic en "Consultar BCRA" del mapa, así
     que no hace falta caché ni corridas masivas de fondo."""
     deudas = _bcra_get(f"/{cuit}")
     time.sleep(BCRA_DELAY_MS / 1000)
     cheques = _bcra_get(f"/ChequesRechazados/{cuit}")
     if deudas is None or cheques is None:
         raise RuntimeError("La API del BCRA no respondió correctamente")
-    situacion, entidad = _bcra_situacion_actual(deudas)
-    cant = _bcra_cantidad_rechazados(cheques)
+    situacion, entidad, periodo, entidades = _bcra_situacion_actual(deudas)
+    detalle_cheques = _bcra_cheques_detalle(cheques)
     return {
         "situacion": situacion,
         "entidad": entidad,
-        "cant_cheques": cant,
-        "tiene_rechazados": cant > 0,
+        "periodo": periodo,
+        "entidades": entidades,
+        "cant_cheques": len(detalle_cheques),
+        "tiene_rechazados": len(detalle_cheques) > 0,
+        "cheques": detalle_cheques,
     }
 
 

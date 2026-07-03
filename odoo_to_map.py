@@ -121,45 +121,74 @@ PROV2ZONA = {
 # Orden de la leyenda (como en la tabla de zonas)
 ZONA_ORDER = ["PAMPEANA","AMBA","CUYO","NEA","NOA","PATAGONICA"]
 
-# --- Partidos de AMBA (CABA + 40 municipios) -----------------------
-# Normalizador de nombres de partido: saca " (AR)", acentos, puntos,
-# pasa a minúsculas y expande abreviaturas (Gral. -> General, etc.).
-def _ncity(s):
-    s = re.sub(r"\s*\([^)]*\)", "", s or "")
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
-    s = s.replace(".", " ")
-    s = re.sub(r"\bgral\b", "general", s)
-    s = re.sub(r"\bgrl\b", "general", s)
-    s = re.sub(r"\bpdte\b", "presidente", s)
-    s = re.sub(r"\bpte\b", "presidente", s)
-    s = re.sub(r"\bcnel\b", "coronel", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+# --- AMBA por geometría (no por nombre de partido) -----------------
+# Antes se decidía AMBA/PAMPEANA comparando el campo 'city' de Odoo contra
+# la lista de 40 partidos, pero 'city' en Odoo suele traer la LOCALIDAD
+# (ej. "Burzaco") y no el PARTIDO ("Almirante Brown"), así que la mayoría
+# de las veces no matcheaba nada y todo caía en PAMPEANA por error. Ahora
+# se usa point-in-polygon con lat/lng contra los mismos polígonos de
+# partidos que ya están dibujados en el mapa (la constante GEO embebida en
+# public/index.html) — mismo criterio que usa suri_to_json.py.
+INDEX_HTML = os.path.join(OUTPUT_DIR, "index.html")
 
-# Lista canónica de los 40 partidos + alias frecuentes (forma corta que a
-# veces guarda Odoo). Todo se normaliza con _ncity, así que no importan
-# acentos ni mayúsculas.
-_AMBA_NAMES = [
- "Almirante Brown","Avellaneda","Berazategui","Berisso","Brandsen","Campana",
- "Cañuelas","Ensenada","Escobar","Esteban Echeverría","Exaltación de la Cruz",
- "Ezeiza","Florencio Varela","General Las Heras","General Rodríguez",
- "General San Martín","Hurlingham","Ituzaingó","José C. Paz","La Matanza",
- "La Plata","Lanús","Lomas de Zamora","Luján","Malvinas Argentinas",
- "Marcos Paz","Merlo","Moreno","Morón","Quilmes","Pilar","Presidente Perón",
- "San Fernando","San Isidro","San Miguel","San Vicente","Tigre",
- "Tres de Febrero","Vicente López","Zárate",
- # alias / formas cortas:
- "Coronel Brandsen","Las Heras","Rodríguez","San Martín",
-]
-AMBA_PARTIDOS = {_ncity(n) for n in _AMBA_NAMES}
+def _load_geo_features():
+    html = open(INDEX_HTML, encoding="utf-8").read()
+    m = re.search(r"const GEO = (\{.*?\});", html, re.S)
+    if not m:
+        raise SystemExit("No se encontró 'const GEO = {...};' en public/index.html")
+    return json.loads(m.group(1))["features"]
 
-def zona_for(prov, city):
-    """Zona de un cliente. BA se decide por partido (city); el resto, por provincia."""
+def _bbox(ring):
+    xs = [p[0] for p in ring]
+    ys = [p[1] for p in ring]
+    return min(xs), min(ys), max(xs), max(ys)
+
+def _point_in_ring(x, y, ring):
+    inside = False
+    n = len(ring)
+    j = n - 1
+    for i in range(n):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        if (yi > y) != (yj > y):
+            xint = (xj - xi) * (y - yi) / (yj - yi) + xi
+            if x < xint:
+                inside = not inside
+        j = i
+    return inside
+
+def _prep_feature(f):
+    geom = f["geometry"]
+    polys = [geom["coordinates"]] if geom["type"] == "Polygon" else geom["coordinates"]
+    prepped = []
+    for poly in polys:
+        if not poly:
+            continue
+        outer = poly[0]
+        prepped.append({"bbox": _bbox(outer), "outer": outer, "holes": poly[1:]})
+    return {"name": f["properties"]["name"], "polys": prepped}
+
+def _feature_contains(feat, x, y):
+    for poly in feat["polys"]:
+        x0, y0, x1, y1 = poly["bbox"]
+        if x < x0 or x > x1 or y < y0 or y > y1:
+            continue
+        if _point_in_ring(x, y, poly["outer"]):
+            if any(_point_in_ring(x, y, h) for h in poly["holes"]):
+                continue
+            return True
+    return False
+
+_geo_features = [_prep_feature(f) for f in _load_geo_features()]
+_partido_features = [f for f in _geo_features if f["name"] not in MAP_PROVS]
+
+def zona_for(prov, lat, lng):
+    """Zona de un cliente. BA se decide por geometría (partido real, vía
+    lat/lng); el resto, por provincia."""
     if prov == "CABA":
         return "AMBA"
     if prov == "Buenos Aires":
-        return "AMBA" if _ncity(city) in AMBA_PARTIDOS else "PAMPEANA"
+        return "AMBA" if any(_feature_contains(f, lng, lat) for f in _partido_features) else "PAMPEANA"
     return PROV2ZONA.get(prov, "Sin zona")
 
 # ------------------------------------------------------------------
@@ -188,7 +217,6 @@ def m2o_name(v):  # many2one llega como [id, "Nombre"] o False
 clients, sin_geo, sin_prov, sin_vend = [], 0, 0, 0
 prov_no_reconocidas = {}   # diagnóstico: qué devuelve Odoo y no matchea
 ba_amba, ba_pamp = 0, 0    # diagnóstico: cómo se repartió Buenos Aires
-ba_city_pamp = {}          # partidos de BA que NO matchearon AMBA (revisar nombres)
 for p in partners:
     lat, lng = p.get("partner_latitude"), p.get("partner_longitude")
     if not lat or not lng:               # 0.0 o False => todavía sin geolocalizar
@@ -204,14 +232,12 @@ for p in partners:
     vend = m2o_name(p.get("user_id")) or "Sin asignar"
     if vend == "Sin asignar":
         sin_vend += 1
-    zona = zona_for(prov, p.get("city"))
+    zona = zona_for(prov, lat, lng)
     if prov == "Buenos Aires":           # auditoría del reparto AMBA / PAMPEANA
         if zona == "AMBA":
             ba_amba += 1
         else:
             ba_pamp += 1
-            key = (p.get("city") or "").strip() or "(city VACÍO)"
-            ba_city_pamp[key] = ba_city_pamp.get(key, 0) + 1
     clients.append({
         "id": p["id"],
         "name": p["name"],
@@ -303,12 +329,7 @@ if sin_vend: print(f"  ⚠ {sin_vend} sin vendedor asignado")
 
 # Reparto de Buenos Aires (AMBA por partido vs PAMPEANA el resto)
 if ba_amba or ba_pamp:
-    print(f"\n  Buenos Aires: {ba_amba} en AMBA (partidos) · {ba_pamp} en PAMPEANA (resto)")
-if ba_city_pamp:
-    print("  Partidos de BA que NO matchearon AMBA (cayeron en PAMPEANA).")
-    print("  Revisá que ninguno de estos sea en realidad de AMBA mal escrito:")
-    for nombre, n in sorted(ba_city_pamp.items(), key=lambda x: -x[1]):
-        print(f"    {n:5d}  ->  {nombre!r}")
+    print(f"\n  Buenos Aires: {ba_amba} en AMBA (partidos, por geolocalización) · {ba_pamp} en PAMPEANA (resto)")
 
 if prov_no_reconocidas:
     print("\n  Nombres de provincia que Odoo devuelve y el script NO reconoce")
