@@ -221,6 +221,7 @@ for p in partners:
         "zona": zona,
         "provincia": prov,
         "direccion": ", ".join(x for x in [p.get("street"), p.get("city")] if x),
+        "origen": "ODOO",
     })
 
 # ------------------------------------------------------------------
