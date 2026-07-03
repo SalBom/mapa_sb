@@ -32,9 +32,17 @@
   .masters{ display:flex; gap:8px; margin-top:14px; }
   .chip{ flex:1; display:flex; align-items:center; justify-content:center; gap:7px; cursor:pointer; user-select:none; border:1px solid var(--line); border-radius:8px; padding:8px; font-size:12.5px; font-weight:600; background:var(--soft); color:var(--ink); }
   .chip input{ accent-color:var(--brand); }
-  .search{ width:100%; margin-top:14px; padding:9px 11px; border:1px solid var(--line); border-radius:8px; font-size:13px; outline:none; background:var(--panel); color:var(--ink); }
+  .search-wrap{ position:relative; margin-top:14px; }
+  .search{ width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px; font-size:13px; outline:none; background:var(--panel); color:var(--ink); }
   .search::placeholder{ color:var(--muted); }
   .search:focus{ border-color:var(--brand); }
+  .search-results{ display:none; position:absolute; top:calc(100% + 4px); left:0; right:0; background:var(--panel); border:1px solid var(--line); border-radius:9px; box-shadow:0 8px 24px rgba(0,0,0,.18); max-height:280px; overflow-y:auto; z-index:20; }
+  .search-result{ display:flex; flex-direction:column; gap:1px; padding:8px 11px; cursor:pointer; border-bottom:1px solid var(--line); }
+  .search-result:last-child{ border-bottom:0; }
+  .search-result:hover, .search-result.active{ background:var(--soft); }
+  .search-result .sr-name{ font-size:12.5px; font-weight:600; color:var(--ink); }
+  .search-result .sr-meta{ font-size:11px; color:var(--muted); }
+  .search-empty{ padding:10px 11px; font-size:12px; color:var(--muted); }
   .grouphdr{ font-size:11px; font-weight:700; letter-spacing:.04em; color:var(--muted); margin:16px 0 7px; display:flex; align-items:center; gap:8px;}
   .grouphdr .gl{ flex:1; height:1px; background:var(--line); }
   .row{ display:flex; align-items:center; gap:10px; padding:8px 9px; border-radius:8px; cursor:pointer; }
@@ -204,7 +212,10 @@
         <label class="chip"><input type="checkbox" id="mProv" checked> Provincias</label>
         <label class="chip"><input type="checkbox" id="mCli" checked> Clientes</label>
       </div>
-      <input class="search" id="search" placeholder="Buscar cliente&hellip;" autocomplete="off">
+      <div class="search-wrap">
+        <input class="search" id="search" placeholder="Buscar cliente por nombre o CUIT&hellip;" autocomplete="off">
+        <div id="searchResults" class="search-results"></div>
+      </div>
     </div>
     <div class="scroll pad" id="list"></div>
     <div class="countbar"><span id="countbarLabel">Clientes visibles</span><b id="count">0</b><button class="exportbtn" id="csvBtn" title="Exportar visible a CSV">CSV</button></div>
@@ -569,11 +580,17 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
     const groupOk = activeGroups.has(c[ds.groupField]);
     const estadoOk = !c.estado || activeEstados.has(c.estado);
     const sistemaOk = !c.origen || activeSistemas.has(c.origen);
-    const searchOk = !q || c.name.toLowerCase().includes(q);
+    const searchOk = !q || matchesQuery(c,q);
     if(!sistemaOk) return false;
     if(mode==="zona") return zonaOk && searchOk;
     if(mode==="estado") return estadoOk && searchOk;
     return groupOk && searchOk;
+  }
+  function matchesQuery(c, q){
+    if(c.name && c.name.toLowerCase().includes(q)) return true;
+    const qDigits = q.replace(/\D/g,"");
+    if(qDigits && c.cuit && String(c.cuit).replace(/\D/g,"").includes(qDigits)) return true;
+    return false;
   }
 
   const map=L.map("map",{zoomControl:true,preferCanvas:true}).setView([-40,-63],4);
@@ -838,7 +855,55 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
   function sistemaToggle(key, checked){ checked?activeSistemas.add(key):activeSistemas.delete(key); refresh(); }
   document.getElementById("mOdoo").onchange=e=>sistemaToggle("ODOO", e.target.checked);
   document.getElementById("mSuri").onchange=e=>sistemaToggle("SURI", e.target.checked);
-  document.getElementById("search").oninput=e=>{q=e.target.value.trim().toLowerCase(); refresh();};
+  function searchCandidates(query){
+    let cands = [];
+    if(datasetKey==="clientes"||datasetKey==="ambos") DATASETS.clientes.items.forEach(c=>cands.push({c, ds:DATASETS.clientes, isComp:false}));
+    if((datasetKey==="competencia"||datasetKey==="ambos") && DATASETS.competencia) DATASETS.competencia.items.forEach(c=>cands.push({c, ds:DATASETS.competencia, isComp:true}));
+    return cands.filter(x=>matchesQuery(x.c,query)).slice(0,8);
+  }
+  function goToClient(c, ds, isComp){
+    document.getElementById("searchResults").style.display="none";
+    map.flyTo([c.lat,c.lng], Math.max(map.getZoom(),16), {duration:.6});
+    const popup = L.popup({maxWidth:280}).setLatLng([c.lat,c.lng]).setContent(popupFor(c,ds,isComp));
+    map.once("moveend", ()=> popup.openOn(map));
+  }
+  function renderSearchResults(query){
+    const box=document.getElementById("searchResults");
+    if(!query || query.length<2){ box.style.display="none"; box.innerHTML=""; box._results=null; return; }
+    const results = searchCandidates(query);
+    box._results = results;
+    if(!results.length){
+      box.innerHTML = '<div class="search-empty">Sin resultados</div>';
+    } else {
+      box.innerHTML = results.map((r,i)=>{
+        const meta = r.isComp ? r.c.marca : (r.c.cuit ? "CUIT "+r.c.cuit : (r.c.vendedor||""));
+        return '<div class="search-result" data-idx="'+i+'"><span class="sr-name">'+esc(r.c.name)+'</span><span class="sr-meta">'+esc(meta)+'</span></div>';
+      }).join("");
+    }
+    box.style.display = "block";
+  }
+  document.getElementById("search").oninput=e=>{
+    q=e.target.value.trim().toLowerCase();
+    refresh();
+    renderSearchResults(q);
+  };
+  document.getElementById("search").addEventListener("keydown", e=>{
+    const box=document.getElementById("searchResults");
+    if(e.key==="Enter"){
+      if(box._results && box._results.length){ const r=box._results[0]; goToClient(r.c, r.ds, r.isComp); }
+    } else if(e.key==="Escape"){
+      box.style.display="none";
+    }
+  });
+  document.getElementById("searchResults").addEventListener("click", e=>{
+    const row=e.target.closest(".search-result"); if(!row) return;
+    const box=document.getElementById("searchResults");
+    const r = box._results && box._results[+row.dataset.idx];
+    if(r) goToClient(r.c, r.ds, r.isComp);
+  });
+  document.addEventListener("click", e=>{
+    if(!e.target.closest(".search-wrap")) document.getElementById("searchResults").style.display="none";
+  });
 
   updateModeUI();
   refresh();
