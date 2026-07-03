@@ -84,6 +84,10 @@
   }
   .pop .svbtn{ display:block; width:100%; margin-top:9px; padding:7px 10px; border:0; border-radius:7px; background:var(--accent); color:var(--on-accent); font-size:12px; font-weight:600; cursor:pointer; }
   .pop .svbtn:hover{ opacity:.92; }
+  .pop .bcrabtn{ display:block; width:100%; margin-top:2px; padding:6px 10px; border:1px solid var(--line); border-radius:7px; background:var(--soft); color:var(--ink); font-size:12px; font-weight:600; cursor:pointer; }
+  .pop .bcrabtn:hover{ border-color:var(--brand); }
+  .pop .bcrabtn:disabled{ opacity:.6; cursor:wait; }
+  .bcra-slot{ margin-top:2px; }
   #svModal{ position:absolute; inset:0; background:rgba(15,23,42,.55); display:none; align-items:center; justify-content:center; z-index:1000; }
   #svCard{ width:min(880px,92vw); height:min(560px,82vh); background:var(--panel); border-radius:14px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,.35); display:flex; flex-direction:column; }
   #svHead{ display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--line); }
@@ -286,6 +290,16 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
   try {
     SURI_DATA = await fetch("./suri.json", {cache:"no-store"}).then(r=> r.ok ? r.json() : null);
   } catch(e){ SURI_DATA = null; }
+  // Consulta al BCRA a demanda (botón "Consultar BCRA" en el popup): no hay
+  // ningún archivo precargado, cada CUIT se pide una sola vez por sesión y
+  // el resultado queda en memoria para no reconsultarlo si se reabre el popup.
+  const BCRA_CACHE = new Map();
+  function normalizeCuit(v){
+    if(!v) return null;
+    const digits = String(v).replace(/\D/g,"");
+    if(digits.length < 11) return null;
+    return digits.slice(-11);
+  }
 
 
   // ---- Street View ----
@@ -313,6 +327,23 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
   document.addEventListener("click", e=>{
     const b=e.target.closest(".svbtn"); if(!b) return;
     openSV(parseFloat(b.dataset.lat), parseFloat(b.dataset.lng), b.dataset.name||"");
+  });
+  document.addEventListener("click", async e=>{
+    const b=e.target.closest(".bcrabtn"); if(!b) return;
+    const cuit=b.dataset.cuit, slot=b.closest(".bcra-slot");
+    b.disabled=true; b.textContent="Consultando...";
+    try{
+      const info = await consultarBcra(cuit);
+      if(slot) slot.innerHTML = bcraBadgesHtml(info);
+    }catch(err){
+      b.disabled=false; b.textContent="Consultar BCRA";
+      if(slot){
+        const errEl=document.createElement("span");
+        errEl.style.cssText="color:#ef4444;font-size:11px;display:block;margin-top:4px";
+        errEl.textContent = err.message || "Error al consultar";
+        slot.appendChild(errEl);
+      }
+    }
   });
   function esc(x){ return String(x).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
@@ -393,6 +424,33 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
   const ESTADO_ORDER=["ACTIVO","RIESGO MEDIO","RIESGO ALTO","PERDIDO","SIN FACTURA"];
   const ESTADO_COLORS={"ACTIVO":"#22c55e","RIESGO MEDIO":"#eab308","RIESGO ALTO":"#f97316","PERDIDO":"#ef4444","SIN FACTURA":"#94a3b8"};
   const hasEstado = DATASETS.clientes.items.some(c=>c.estado);
+
+  // ---- BCRA (situación crediticia + cheques rechazados, por CUIT) ----
+  const SITUACION_COLORS={1:"#22c55e",2:"#84cc16",3:"#eab308",4:"#f97316",5:"#ef4444",6:"#991b1b"};
+  function bcraBadgesHtml(info){
+    let html = '';
+    if(info.situacion){
+      html += '<span>Situaci&oacute;n BCRA: <span class="estado-badge" style="background:'+(SITUACION_COLORS[info.situacion]||"#94a3b8")+'">'+esc(info.situacion)+(info.entidad?' ('+esc(info.entidad)+')':'')+'</span></span>';
+    } else {
+      html += '<span style="color:var(--muted)">Sin situaci&oacute;n registrada en BCRA</span>';
+    }
+    if(info.tiene_rechazados){
+      html += '<span style="font-weight:600;color:#ef4444">&#9888; '+esc(info.cant_cheques)+' cheque(s) rechazado(s)</span>';
+    }
+    return html;
+  }
+  function bcraSlotHtml(cuit){
+    const cached = BCRA_CACHE.get(cuit);
+    if(cached) return bcraBadgesHtml(cached);
+    return '<button class="bcrabtn" data-cuit="'+cuit+'">Consultar BCRA</button>';
+  }
+  async function consultarBcra(cuit){
+    const res = await fetch("/bcra-lookup", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({cuit})});
+    const data = await res.json();
+    if(!data.ok) throw new Error(data.error || "Error al consultar BCRA");
+    BCRA_CACHE.set(cuit, data);
+    return data;
+  }
 
   // ---- Detección de compartidos (competencia que coincide con clientes) ----
   let COMPARTIDOS = new Set();
@@ -498,10 +556,10 @@ const GEO = {"type":"FeatureCollection","features":[{"type":"Feature","propertie
       if(c.origen) extra+='<span>Sistema: <span class="sys-badge" style="color:'+(c.origen==="SURI"?"#C28E5C":"var(--brand)")+'">'+esc(c.origen)+'</span></span>';
       if(c.estado) extra+='<span>Estado: <span class="estado-badge" style="background:'+ESTADO_COLORS[c.estado]+'">'+esc(c.estado)+'</span></span>';
       if(c.ultima_factura) extra+='<span>Ult. factura: '+esc(c.ultima_factura)+'</span>';
-      if(c.origen==="SURI"){
-        if(c.telefono) extra+='<span>Tel: '+esc(c.telefono)+'</span>';
-        if(c.cuit) extra+='<span>CUIT: '+esc(c.cuit)+'</span>';
-      }
+      if(c.telefono) extra+='<span>Tel: '+esc(c.telefono)+'</span>';
+      if(c.cuit) extra+='<span>CUIT: '+esc(c.cuit)+'</span>';
+      const cuit = normalizeCuit(c.cuit);
+      if(cuit) extra+='<div class="bcra-slot" data-cuit="'+cuit+'">'+bcraSlotHtml(cuit)+'</div>';
     }
     return '<div class="pop"><b>'+esc(c.name)+'</b>'+
       '<span>'+groupDot+'</span>'+

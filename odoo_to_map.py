@@ -178,7 +178,7 @@ domain = [
     # hasta correr "Geolocalizar" en Odoo). Así el total cuadra con Odoo.
 ]
 fields = ["name", "partner_latitude", "partner_longitude",
-          "user_id", "state_id", "street", "city"]
+          "user_id", "state_id", "street", "city", "vat"]
 
 partners = search_read("res.partner", domain, fields)
 
@@ -221,6 +221,7 @@ for p in partners:
         "zona": zona,
         "provincia": prov,
         "direccion": ", ".join(x for x in [p.get("street"), p.get("city")] if x),
+        "cuit": p.get("vat") or "",
         "origen": "ODOO",
     })
 

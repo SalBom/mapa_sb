@@ -13,15 +13,23 @@ Railway solo) y las credenciales de Odoo de variables de entorno
 Si una corrida de odoo_to_map.py falla (ej: Odoo no responde), el
 mapa sigue sirviendo el último data.json bueno: el script solo
 sobrescribe el archivo si termina OK, nunca lo deja a medio escribir.
+
+La consulta al BCRA (situación crediticia / cheques rechazados) es
+100% a demanda: el endpoint /bcra-lookup consulta UN cliente por vez,
+cuando alguien aprieta el botón "Consultar BCRA" en el popup del mapa.
+No hay ningún proceso de fondo que recorra los ~15.000 clientes.
 """
 import datetime
 import http.server
 import json
 import os
-import subprocess
+import re
 import sys
+import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 import xmlrpc.client
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -31,6 +39,10 @@ REFRESH_MINUTES = float(os.environ.get("REFRESH_MINUTES", "30"))
 
 ODOO_URL = os.environ.get("ODOO_URL", "").rstrip("/")
 ODOO_DB = os.environ.get("ODOO_DB", "")
+
+BCRA_API_BASE = "https://api.bcra.gob.ar/centraldedeudores/v1.0/Deudas"
+BCRA_DELAY_MS = int(os.environ.get("BCRA_DELAY_MS", "800"))
+BCRA_TIMEOUT = float(os.environ.get("BCRA_TIMEOUT", "15"))
 
 
 def log(msg):
@@ -65,6 +77,80 @@ def sync_forever():
         run_sync()
 
 
+def normalize_cuit(v):
+    if not v:
+        return None
+    digits = re.sub(r"\D", "", str(v))
+    if len(digits) < 11:
+        return None
+    return digits[-11:]
+
+
+def _bcra_get(path):
+    """dict con la respuesta, {} si el BCRA confirmó que no hay registro
+    (404/400), o None si hubo un error (red, 429, 5xx)."""
+    req = urllib.request.Request(BCRA_API_BASE + path, headers={
+        "User-Agent": "mapa-sb/1.0 (mapa de territorios SAL-BOM)",
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=BCRA_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 400):
+            return {}
+        log(f"bcra: status {e.code} en {path}")
+        return None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        log(f"bcra: error de red en {path}: {e}")
+        return None
+    except Exception as e:
+        log(f"bcra: error inesperado en {path}: {e}")
+        return None
+
+
+def _bcra_situacion_actual(deudas_json):
+    """(situacion, entidad) del período más reciente, tomando la PEOR
+    situación (la más alta) entre todos los bancos de ese período."""
+    periodos = (deudas_json or {}).get("results", {}).get("periodos") or []
+    if not periodos:
+        return None, None
+    periodo_actual = max(periodos, key=lambda p: p.get("periodo", ""))
+    entidades = periodo_actual.get("entidades") or []
+    if not entidades:
+        return None, None
+    peor = max(entidades, key=lambda e: e.get("situacion") or 0)
+    return peor.get("situacion"), peor.get("entidad")
+
+
+def _bcra_cantidad_rechazados(cheques_json):
+    causales = (cheques_json or {}).get("results", {}).get("causales") or []
+    total = 0
+    for causal in causales:
+        for ent in causal.get("entidades") or []:
+            total += len(ent.get("detalle") or [])
+    return total
+
+
+def bcra_lookup(cuit):
+    """Consulta un solo CUIT contra la API del BCRA (situación + cheques
+    rechazados). Se usa una vez por clic en "Consultar BCRA" del mapa, así
+    que no hace falta caché ni corridas masivas de fondo."""
+    deudas = _bcra_get(f"/{cuit}")
+    time.sleep(BCRA_DELAY_MS / 1000)
+    cheques = _bcra_get(f"/ChequesRechazados/{cuit}")
+    if deudas is None or cheques is None:
+        raise RuntimeError("La API del BCRA no respondió correctamente")
+    situacion, entidad = _bcra_situacion_actual(deudas)
+    cant = _bcra_cantidad_rechazados(cheques)
+    return {
+        "situacion": situacion,
+        "entidad": entidad,
+        "cant_cheques": cant,
+        "tiene_rechazados": cant > 0,
+    }
+
+
 class MapHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/login":
@@ -96,6 +182,28 @@ class MapHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 log(f"login: FALLÓ para {user}")
                 self._json_response(401, {"ok": False, "error": "Usuario o contraseña incorrectos"})
+            return
+
+        if self.path == "/bcra-lookup":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                payload = json.loads(body)
+            except Exception:
+                self._json_response(400, {"ok": False, "error": "JSON inválido"})
+                return
+            cuit = normalize_cuit(payload.get("cuit"))
+            if not cuit:
+                self._json_response(400, {"ok": False, "error": "CUIT inválido"})
+                return
+            try:
+                info = bcra_lookup(cuit)
+            except Exception as e:
+                log(f"bcra: error consultando CUIT {cuit}: {e}")
+                self._json_response(502, {"ok": False, "error": "No se pudo consultar al BCRA"})
+                return
+            self._json_response(200, {"ok": True, "cuit": cuit, **info})
+            return
 
     def _json_response(self, code, obj):
         data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
